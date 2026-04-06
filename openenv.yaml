@@ -1,0 +1,15 @@
+name: smartcharge-env
+description: EV charging optimization environment with deadline, price, and renewable-aware scheduling.
+
+tasks:
+  - id: easy
+    name: Low Traffic Charging
+    difficulty: easy
+  - id: medium
+    name: Dynamic Pricing
+    difficulty: medium
+  - id: hard
+    name: Peak Hour Chaos
+    difficulty: hard
+
+entry_point: inference.py
