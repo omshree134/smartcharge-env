@@ -6,7 +6,7 @@ colorTo: blue
 sdk: docker
 app_port: 7860
 pinned: false
-short_description: EV charging optimization environment with FastAPI and OpenEnv inference.
+short_description: EV charging environment with FastAPI and OpenEnv.
 ---
 
 # SmartCharge-Env
