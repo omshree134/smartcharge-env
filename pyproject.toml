@@ -1,0 +1,19 @@
+[project]
+name = "smartcharge-env"
+version = "0.1.0"
+description = "EV charging optimization environment for OpenEnv."
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.115.0",
+  "httpx>=0.28.0",
+  "openai>=2.7.2",
+  "openenv-core>=0.2.0",
+  "pydantic>=2.11.0",
+  "uvicorn>=0.34.0",
+]
+
+[project.scripts]
+server = "server.app:main"
+
+[tool.openenv]
+entrypoint = "inference.py"

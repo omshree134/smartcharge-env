@@ -28,6 +28,7 @@ class SmartChargeEnv:
         self.peak_load = 0.0
         self.last_power_used = 0.0
         self.vehicle_counter = 0
+        self.no_progress_streak = 0
 
     def reset(self) -> Observation:
         self.rng = random.Random(self.seed)
@@ -36,6 +37,7 @@ class SmartChargeEnv:
         self.peak_load = 0.0
         self.last_power_used = 0.0
         self.vehicle_counter = 0
+        self.no_progress_streak = 0
         self.price = self._compute_price(0)
         self.renewable = self._compute_renewable(0)
         return self._get_observation()
@@ -49,6 +51,7 @@ class SmartChargeEnv:
         assignments = list(normalized_action.assignments[:current_vehicle_count])
         if len(assignments) < current_vehicle_count:
             assignments.extend([0] * (current_vehicle_count - len(assignments)))
+        pre_step_demand = sum(max(0.0, 1.0 - vehicle.soc) for vehicle in self.vehicles)
 
         power_used = 0.0
         charged_energy = 0.0
@@ -88,6 +91,13 @@ class SmartChargeEnv:
                 continue
             next_vehicles.append(updated_vehicle)
 
+        post_step_demand = sum(max(0.0, 1.0 - vehicle.soc) for vehicle in next_vehicles)
+        progress_delta = max(0.0, pre_step_demand - post_step_demand)
+        if pre_step_demand > 0 and progress_delta < 0.01:
+            self.no_progress_streak += 1
+        else:
+            self.no_progress_streak = 0
+
         self.vehicles = next_vehicles
         self.step_count += 1
         self._spawn_arrivals()
@@ -102,6 +112,9 @@ class SmartChargeEnv:
             power_used=power_used,
             total_vehicles=total_vehicles,
             current_vehicle_count=current_vehicle_count,
+            pre_step_demand=pre_step_demand,
+            progress_delta=progress_delta,
+            no_progress_streak=self.no_progress_streak,
         )
         reward = reward_breakdown["total"]
         self.last_power_used = power_used
@@ -194,6 +207,9 @@ class SmartChargeEnv:
         power_used: float,
         total_vehicles: int,
         current_vehicle_count: int,
+        pre_step_demand: float,
+        progress_delta: float,
+        no_progress_streak: int,
     ) -> Dict[str, float]:
         weighted_served = float(served_on_time)
         deadline_score = min(weighted_served / total_vehicles, 1.0)
@@ -218,11 +234,32 @@ class SmartChargeEnv:
 
         action_efficiency = max(0.0, 1.0 - 0.6 * idle_penalty - 0.4 * unnecessary_charge_penalty)
 
+        # Continuous partial-progress signal so agents get credit before full completion.
+        progress_score = 0.0
+        if pre_step_demand > 0:
+            progress_score = min(progress_delta / pre_step_demand, 1.0)
+
+        # Penalize stagnation loops where the policy repeatedly makes no progress.
+        loop_penalty = 0.0
+        if pre_step_demand > 0:
+            loop_penalty = min(no_progress_streak / 4.0, 1.0)
+
+        # Penalize harmful charging when conditions are clearly unfavorable.
+        harmful_charge_penalty = 0.0
+        if power_used > 0:
+            expensive_dirty_grid = self.price > 0.75 and self.renewable < 0.25
+            no_urgent_demand = urgent_vehicles == 0
+            if expensive_dirty_grid and no_urgent_demand:
+                harmful_charge_penalty = min(power_ratio, 1.0)
+
         total = (
-            0.4 * deadline_score
-            + 0.3 * energy_efficiency
-            + 0.2 * renewable_usage
-            + 0.1 * action_efficiency
+            0.30 * deadline_score
+            + 0.25 * energy_efficiency
+            + 0.15 * renewable_usage
+            + 0.10 * action_efficiency
+            + 0.20 * progress_score
+            - 0.10 * loop_penalty
+            - 0.10 * harmful_charge_penalty
         )
         total = min(max(total, 0.0), 1.0)
 
@@ -231,5 +268,8 @@ class SmartChargeEnv:
             "energy_efficiency": round(energy_efficiency, 4),
             "renewable_usage": round(renewable_usage, 4),
             "action_efficiency": round(action_efficiency, 4),
+            "progress_score": round(progress_score, 4),
+            "loop_penalty": round(loop_penalty, 4),
+            "harmful_charge_penalty": round(harmful_charge_penalty, 4),
             "total": round(total, 4),
         }

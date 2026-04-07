@@ -44,10 +44,13 @@ The environment uses a dense multi-objective reward:
 
 ```text
 reward =
-  0.4 * deadline_score +
-  0.3 * energy_efficiency +
-  0.2 * renewable_usage +
-  0.1 * action_efficiency
+  0.30 * deadline_score +
+  0.25 * energy_efficiency +
+  0.15 * renewable_usage +
+  0.10 * action_efficiency +
+  0.20 * progress_score -
+  0.10 * loop_penalty -
+  0.10 * harmful_charge_penalty
 ```
 
 Reward design highlights:
@@ -56,6 +59,9 @@ Reward design highlights:
 - `energy_efficiency` penalizes high total load and sudden power spikes
 - `renewable_usage` favors charging when renewable energy is plentiful
 - `action_efficiency` penalizes wasting slots or charging unnecessarily
+- `progress_score` gives partial credit for reducing remaining SOC deficit at each step
+- `loop_penalty` discourages repeated no-progress behavior over consecutive steps
+- `harmful_charge_penalty` discourages charging on expensive, low-renewable grid when no urgent demand exists
 
 ## Task Variants
 
@@ -111,11 +117,32 @@ Run the baseline evaluation:
 python inference.py
 ```
 
+`inference.py` runs `easy`, `medium`, and `hard` by default and emits strict structured logs:
+
+```text
+[START] task=<task_name> env=<benchmark> model=<model_name>
+[STEP] step=<n> action=<action_json> reward=<0.00> done=<true|false> error=<msg|null>
+[END] success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
+```
+
 Switch tasks:
 
 ```bash
 TASK_NAME=hard SEED=42 python inference.py
 ```
+
+Hackathon-required environment variables:
+
+```bash
+API_BASE_URL=https://router.huggingface.co/v1
+MODEL_NAME=Qwen/Qwen2.5-72B-Instruct
+HF_TOKEN=your_token_here
+```
+
+Notes:
+- Inference uses the OpenAI client (`openai.OpenAI`) for model calls when `HF_TOKEN` is set.
+- For local offline checks without credentials, it safely falls back to the deterministic EDF baseline policy.
+- `MAX_STEPS_PER_TASK` (default `40`) can be used to control runtime on hosted inference infrastructure.
 
 Start the API:
 
