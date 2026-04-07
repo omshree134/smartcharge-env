@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from env.environment import SmartChargeEnv
@@ -22,7 +22,7 @@ def health() -> dict:
 
 
 @app.post("/reset", response_model=Observation)
-def reset(request: ResetRequest) -> Observation:
+def reset(request: ResetRequest = Body(default_factory=ResetRequest)) -> Observation:
     global _env
     _env = SmartChargeEnv(mode=request.mode, seed=request.seed)
     return _env.reset()

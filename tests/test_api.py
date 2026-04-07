@@ -28,3 +28,10 @@ def test_invalid_action_returns_400():
     client.post("/reset", json={"mode": "easy", "seed": 42})
     response = client.post("/step", json={"assignments": [3]})
     assert response.status_code == 400
+
+
+def test_reset_accepts_missing_body():
+    response = client.post("/reset")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["time_step"] == 0
