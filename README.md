@@ -1,3 +1,14 @@
+---
+title: SmartCharge Env
+emoji: ⚡
+colorFrom: green
+colorTo: blue
+sdk: docker
+app_port: 7860
+pinned: false
+short_description: EV charging optimization environment with FastAPI and OpenEnv inference.
+---
+
 # SmartCharge-Env
 
 SmartCharge-Env is a deterministic EV charging optimization environment for evaluating agents that must balance grid stability, charging cost, renewable availability, and on-time vehicle completion. It is designed to feel like a realistic charging-station control problem.
