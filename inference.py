@@ -29,6 +29,8 @@ TEMPERATURE = float(os.getenv("TEMPERATURE", "0.0"))
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "180"))
 MAX_STEPS_PER_TASK = int(os.getenv("MAX_STEPS_PER_TASK", "40"))
 SUCCESS_SCORE_THRESHOLD = float(os.getenv("SUCCESS_SCORE_THRESHOLD", "0.1"))
+MIN_TASK_SCORE = 0.01
+MAX_TASK_SCORE = 0.99
 random.seed(SEED)
 
 
@@ -68,12 +70,17 @@ def log_step(step: int, action: str, reward: float, done: bool, error: str = "nu
     )
 
 
-def log_end(success: bool, steps: int, rewards: list[float]) -> None:
+def log_end(success: bool, steps: int, score: float, rewards: list[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
-        f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}",
+        f"[END] success={str(success).lower()} steps={steps} "
+        f"score={score:.2f} rewards={rewards_str}",
         flush=True,
     )
+
+
+def clamp_task_score(score: float) -> float:
+    return min(max(score, MIN_TASK_SCORE), MAX_TASK_SCORE)
 
 
 def build_client() -> Optional[OpenAI]:
@@ -193,8 +200,9 @@ def run_episode(task_name: str, client: Optional[OpenAI]) -> tuple[float, bool]:
         env = SmartChargeEnv(mode=task_name, seed=SEED)
         observation = env.reset()
     except Exception:
-        log_end(False, 0, [])
-        return 0.0, False
+        safe_score = MIN_TASK_SCORE
+        log_end(False, 0, safe_score, [])
+        return safe_score, False
 
     max_steps = min(getattr(env, "max_steps", 100), MAX_STEPS_PER_TASK)
 
@@ -216,11 +224,12 @@ def run_episode(task_name: str, client: Optional[OpenAI]) -> tuple[float, bool]:
                 break
     finally:
         score = sum(rewards) / len(rewards) if rewards else 0.0
+        score = clamp_task_score(score)
         success = compute_success(env, score)
         try:
             env.close()
         finally:
-            log_end(success, step, rewards)
+            log_end(success, step, score, rewards)
 
     return score, success
 

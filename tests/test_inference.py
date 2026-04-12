@@ -23,5 +23,5 @@ def test_inference_emits_openenv_logs():
     output = result.stdout.strip().splitlines()
     assert output[0].startswith("[START] task=easy env=smartcharge model=")
     assert output[-1].startswith("[END] success=true")
-    assert "score=" not in output[-1]
+    assert "score=" in output[-1]
     assert any(line.startswith("[STEP] step=1") for line in output)
