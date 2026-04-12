@@ -18,8 +18,9 @@ from env.models import Action, Observation
 # - MODEL_NAME
 # - HF_TOKEN
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-MODEL_NAME = os.getenv("MODEL_NAME", "baseline")
+MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
+ALLOW_BASELINE_FALLBACK = os.getenv("ALLOW_BASELINE_FALLBACK", "0") == "1"
 
 TASK_NAME = os.getenv("TASK_NAME")
 BENCHMARK = os.getenv("BENCHMARK", "smartcharge")
@@ -67,17 +68,30 @@ def log_step(step: int, action: str, reward: float, done: bool, error: str = "nu
     )
 
 
-def log_end(success: bool, steps: int, score: float, rewards: list[float]) -> None:
+def log_end(success: bool, steps: int, rewards: list[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
-        f"[END] success={str(success).lower()} steps={steps} "
-        f"score={score:.2f} rewards={rewards_str}",
+        f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}",
         flush=True,
     )
 
 
 def build_client() -> Optional[OpenAI]:
-    if OpenAI is None or not HF_TOKEN:
+    if OpenAI is None:
+        if ALLOW_BASELINE_FALLBACK:
+            return None
+        raise RuntimeError("openai dependency is unavailable.")
+    if not HF_TOKEN:
+        if ALLOW_BASELINE_FALLBACK:
+            return None
+        raise RuntimeError("HF_TOKEN environment variable is required.")
+    if not MODEL_NAME:
+        raise RuntimeError("MODEL_NAME must be configured.")
+    if not API_BASE_URL:
+        raise RuntimeError("API_BASE_URL must be configured.")
+    if MODEL_NAME == "baseline" and not ALLOW_BASELINE_FALLBACK:
+        raise RuntimeError("MODEL_NAME must resolve to a real hosted model in submission mode.")
+    if ALLOW_BASELINE_FALLBACK and not HF_TOKEN:
         return None
     return OpenAI(api_key=HF_TOKEN, base_url=API_BASE_URL)
 
@@ -173,12 +187,13 @@ def run_episode(task_name: str, client: Optional[OpenAI]) -> tuple[float, bool]:
     score = 0.0
     success = False
     step = 0
+    env: Optional[SmartChargeEnv] = None
 
     try:
         env = SmartChargeEnv(mode=task_name, seed=SEED)
         observation = env.reset()
-    except Exception as e:
-        log_end(False, 0, 0.0, [])
+    except Exception:
+        log_end(False, 0, [])
         return 0.0, False
 
     max_steps = min(getattr(env, "max_steps", 100), MAX_STEPS_PER_TASK)
@@ -202,7 +217,10 @@ def run_episode(task_name: str, client: Optional[OpenAI]) -> tuple[float, bool]:
     finally:
         score = sum(rewards) / len(rewards) if rewards else 0.0
         success = compute_success(env, score)
-        log_end(success, step, score, rewards)
+        try:
+            env.close()
+        finally:
+            log_end(success, step, rewards)
 
     return score, success
 

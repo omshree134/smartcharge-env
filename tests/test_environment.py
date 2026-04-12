@@ -9,9 +9,9 @@ def test_reset_returns_mode_specific_observation():
 
     assert obs.time_step == 0
     assert obs.slots_available == 3
-    assert obs.vehicles == []
-    assert 0.1 <= obs.price <= 1.0
-    assert 0.0 <= obs.renewable <= 1.0
+    assert len(obs.vehicles) == 3
+    assert obs.price == 0.38
+    assert obs.renewable == 0.52
 
 
 def test_charging_updates_soc_with_renewable_scaling():
@@ -78,12 +78,23 @@ def test_policy_respects_slots_and_price_awareness():
         Vehicle(id="soon", soc=0.3, deadline=2, priority="normal"),
     ]
 
-    action = edf_policy(env.state())
+    action = edf_policy(env.state().observation)
 
     assert len(action.assignments) == 3
     assert sum(1 for value in action.assignments if value > 0) <= env.max_slots
     assert action.assignments[0] == 2
     assert action.assignments[1] == 0
+
+
+def test_state_exposes_task_progress():
+    env = SmartChargeEnv(mode="hard", seed=99)
+    env.reset()
+
+    state = env.state()
+
+    assert state.task.id == "hard"
+    assert state.progress.score == 0.0
+    assert state.done is False
 
 
 def test_same_seed_produces_same_trajectory():

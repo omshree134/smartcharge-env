@@ -3,13 +3,16 @@ description: EV charging optimization environment with deadline, price, and rene
 
 tasks:
   - id: easy
-    name: Low Traffic Charging
+    name: Commuter Morning Rush
     difficulty: easy
+    objective: Serve at least 3 vehicles with at most 1 miss.
   - id: medium
-    name: Dynamic Pricing
+    name: Dynamic Pricing Shift
     difficulty: medium
+    objective: Serve at least 4 vehicles while limiting dirty expensive charging.
   - id: hard
-    name: Peak Hour Chaos
+    name: Storm Response Recovery
     difficulty: hard
+    objective: Serve at least 6 vehicles with at most 1 miss during burst arrivals.
 
 entry_point: inference.py

@@ -4,7 +4,7 @@ from fastapi import Body, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from env.environment import SmartChargeEnv
-from env.models import Action, Observation, StepResult
+from env.models import Action, EnvironmentState, Observation, StepResult
 
 
 class ResetRequest(BaseModel):
@@ -36,6 +36,6 @@ def step(action: Action) -> StepResult:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/state", response_model=Observation)
-def state() -> Observation:
+@app.get("/state", response_model=EnvironmentState)
+def state() -> EnvironmentState:
     return _env.state()

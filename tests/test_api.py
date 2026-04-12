@@ -12,16 +12,21 @@ def test_reset_state_and_step_endpoints():
     reset_body = reset_response.json()
     assert reset_body["time_step"] == 0
     assert reset_body["slots_available"] == 3
+    assert len(reset_body["vehicles"]) == 3
 
     state_response = client.get("/state")
     assert state_response.status_code == 200
-    assert state_response.json() == reset_body
+    state_body = state_response.json()
+    assert state_body["observation"] == reset_body
+    assert state_body["task"]["id"] == "medium"
+    assert state_body["progress"]["served"] == 0
 
     step_response = client.post("/step", json={"assignments": [0, 1, 2]})
     assert step_response.status_code == 200
     step_body = step_response.json()
     assert set(step_body.keys()) == {"observation", "reward", "done", "info"}
     assert 0.0 <= step_body["reward"] <= 1.0
+    assert 0.0 <= step_body["info"]["score"] <= 1.0
 
 
 def test_invalid_action_returns_400():

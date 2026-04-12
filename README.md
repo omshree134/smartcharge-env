@@ -11,7 +11,7 @@ short_description: EV charging environment with FastAPI and OpenEnv.
 
 # SmartCharge-Env
 
-SmartCharge-Env is a deterministic EV charging optimization environment for evaluating agents that must balance grid stability, charging cost, renewable availability, and on-time vehicle completion. It is designed to feel like a realistic charging-station control problem.
+SmartCharge-Env is a deterministic EV charging optimization environment for evaluating agents that must balance grid stability, charging cost, renewable availability, and on-time vehicle completion. It is designed as a benchmark of fixed real-world charging scenarios, not just a free-running simulator.
 
 ## Why This Matters
 
@@ -76,13 +76,13 @@ Reward design highlights:
 
 ## Task Variants
 
-| Task | Slots | Arrival Pattern | Grid Behavior | Main Challenge |
-| --- | --- | --- | --- | --- |
-| `easy` | 2 | Low traffic | Mostly stable price | Maximize completion rate |
-| `medium` | 3 | Moderate traffic | Dynamic sinusoidal pricing | Balance deadlines and cost |
-| `hard` | 4 | Bursty traffic | Volatile price and renewable swings | Multi-objective optimization under stress |
+| Task | Scenario | Objective | Main Constraint |
+| --- | --- | --- | --- |
+| `easy` | Commuter Morning Rush | Serve at least 3 vehicles with at most 1 miss | Small station, tight early deadlines |
+| `medium` | Dynamic Pricing Shift | Serve at least 4 vehicles while limiting dirty expensive charging | Mid-episode price spike and renewable dip |
+| `hard` | Storm Response Recovery | Serve at least 6 vehicles with at most 1 miss | Burst arrivals during dirty peak hours |
 
-All tasks are deterministic under a fixed seed.
+Each task now has a fixed arrival schedule, deterministic grid profiles, and explicit success criteria.
 
 ## Baseline Agent
 
@@ -133,7 +133,7 @@ python inference.py
 ```text
 [START] task=<task_name> env=<benchmark> model=<model_name>
 [STEP] step=<n> action=<action_json> reward=<0.00> done=<true|false> error=<msg|null>
-[END] success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
+[END] success=<true|false> steps=<n> rewards=<r1,r2,...,rn>
 ```
 
 Switch tasks:
@@ -152,7 +152,7 @@ HF_TOKEN=your_token_here
 
 Notes:
 - Inference uses the OpenAI client (`openai.OpenAI`) for model calls when `HF_TOKEN` is set.
-- For local offline checks without credentials, it safely falls back to the deterministic EDF baseline policy.
+- Submission mode requires `HF_TOKEN`; local offline fallback is only enabled when `ALLOW_BASELINE_FALLBACK=1`.
 - `MAX_STEPS_PER_TASK` (default `40`) can be used to control runtime on hosted inference infrastructure.
 
 Start the API:
@@ -168,6 +168,8 @@ curl -X POST http://localhost:7860/reset -H "Content-Type: application/json" -d 
 curl http://localhost:7860/state
 curl -X POST http://localhost:7860/step -H "Content-Type: application/json" -d '{"assignments":[2,1,0]}'
 ```
+
+`GET /state` includes task metadata and grader-style progress fields such as served vehicles, missed vehicles, clean-energy ratio, and normalized scenario score.
 
 Run tests:
 

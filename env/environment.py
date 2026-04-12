@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import math
-import random
 from typing import Dict, List, Sequence
 
-from .config import TaskConfig, get_task_config
-from .models import Action, Observation, StepInfo, StepResult, Vehicle
+from .config import TaskConfig, VehicleSpec, get_task_config
+from .models import Action, EnvironmentState, Observation, StepInfo, StepResult, TaskProgress, TaskSpec, Vehicle
 
 SLOW_RATE = 0.08
 FAST_RATE = 0.20
@@ -17,41 +15,71 @@ class SmartChargeEnv:
     def __init__(self, mode: str = "easy", seed: int = 42):
         self.mode = mode
         self.seed = seed
-        self.rng = random.Random(seed)
         self.config: TaskConfig = get_task_config(mode)
         self.max_slots = self.config.max_slots
         self.max_steps = self.config.max_steps
         self.vehicles: List[Vehicle] = []
         self.step_count = 0
-        self.price = self.config.price_base
-        self.renewable = self.config.renewable_base
+        self.price = self.config.price_profile[0]
+        self.renewable = self.config.renewable_profile[0]
         self.peak_load = 0.0
         self.last_power_used = 0.0
-        self.vehicle_counter = 0
         self.no_progress_streak = 0
+        self.total_served = 0
+        self.total_missed = 0
+        self.total_energy_delivered = 0.0
+        self.clean_energy_delivered = 0.0
+        self.dirty_energy_delivered = 0.0
+        self.dirty_charge_steps = 0
+        self.cumulative_reward = 0.0
+        self.last_action_error: str | None = None
+        self.done = False
+        self.closed = False
 
     def reset(self) -> Observation:
-        self.rng = random.Random(self.seed)
         self.step_count = 0
-        self.vehicles = []
+        self.vehicles = [self._vehicle_from_spec(spec) for spec in self.config.initial_vehicles]
         self.peak_load = 0.0
         self.last_power_used = 0.0
-        self.vehicle_counter = 0
         self.no_progress_streak = 0
-        self.price = self._compute_price(0)
-        self.renewable = self._compute_renewable(0)
+        self.total_served = 0
+        self.total_missed = 0
+        self.total_energy_delivered = 0.0
+        self.clean_energy_delivered = 0.0
+        self.dirty_energy_delivered = 0.0
+        self.dirty_charge_steps = 0
+        self.cumulative_reward = 0.0
+        self.last_action_error = None
+        self.done = False
+        self.closed = False
+        self.price = self._price_at(0)
+        self.renewable = self._renewable_at(0)
         return self._get_observation()
 
-    def state(self) -> Observation:
-        return self._get_observation()
+    def state(self) -> EnvironmentState:
+        return EnvironmentState(
+            task=self._task_spec(),
+            observation=self._get_observation(),
+            progress=self._progress(),
+            done=self.done,
+            step_count=self.step_count,
+        )
+
+    def close(self) -> None:
+        self.closed = True
 
     def step(self, action: Action | Dict[str, Sequence[int]], strict: bool = False):
+        if self.done:
+            raise RuntimeError("Episode is already complete. Call reset() before step().")
+
         normalized_action = self._normalize_action(action, strict=strict)
         current_vehicle_count = len(self.vehicles)
         assignments = list(normalized_action.assignments[:current_vehicle_count])
         if len(assignments) < current_vehicle_count:
             assignments.extend([0] * (current_vehicle_count - len(assignments)))
         pre_step_demand = sum(max(0.0, 1.0 - vehicle.soc) for vehicle in self.vehicles)
+        current_price = self.price
+        current_renewable = self.renewable
 
         power_used = 0.0
         charged_energy = 0.0
@@ -70,24 +98,25 @@ class SmartChargeEnv:
                 available_slots -= 1
 
             base_charge = ACTION_TO_CHARGE[assignment]
-            effective_charge = base_charge * (1.0 + self.renewable * 0.2)
+            effective_charge = base_charge * (1.0 + current_renewable * 0.2)
             updated_soc = min(1.0, vehicle.soc + effective_charge)
-            charged_energy += max(0.0, updated_soc - vehicle.soc)
+            delivered = max(0.0, updated_soc - vehicle.soc)
+            charged_energy += delivered
             power_used += ACTION_TO_POWER[assignment]
             self.vehicles[index] = vehicle.model_copy(update={"soc": updated_soc})
 
-        departing_ids = set()
+        clean_energy = charged_energy * current_renewable
+        dirty_energy = max(0.0, charged_energy - clean_energy)
+
         next_vehicles: List[Vehicle] = []
         for vehicle in self.vehicles:
             updated_deadline = max(0, vehicle.deadline - 1)
             updated_vehicle = vehicle.model_copy(update={"deadline": updated_deadline})
             if updated_vehicle.soc >= 1.0:
                 served_on_time += 1
-                departing_ids.add(updated_vehicle.id)
                 continue
             if updated_deadline <= 0:
                 missed += 1
-                departing_ids.add(updated_vehicle.id)
                 continue
             next_vehicles.append(updated_vehicle)
 
@@ -100,38 +129,55 @@ class SmartChargeEnv:
 
         self.vehicles = next_vehicles
         self.step_count += 1
-        self._spawn_arrivals()
-        self.price = self._compute_price(self.step_count)
-        self.renewable = self._compute_renewable(self.step_count)
+        self._spawn_arrivals(self.step_count)
 
         total_vehicles = max(1, current_vehicle_count)
         reward_breakdown = self._calculate_reward(
             served_on_time=served_on_time,
             missed=missed,
             charged_energy=charged_energy,
+            clean_energy=clean_energy,
+            dirty_energy=dirty_energy,
             power_used=power_used,
             total_vehicles=total_vehicles,
             current_vehicle_count=current_vehicle_count,
             pre_step_demand=pre_step_demand,
             progress_delta=progress_delta,
             no_progress_streak=self.no_progress_streak,
+            price=current_price,
+            renewable=current_renewable,
         )
         reward = reward_breakdown["total"]
+        self.cumulative_reward += reward
+        self.total_served += served_on_time
+        self.total_missed += missed
+        self.total_energy_delivered += charged_energy
+        self.clean_energy_delivered += clean_energy
+        self.dirty_energy_delivered += dirty_energy
+        if power_used > 0 and current_price >= 0.75 and current_renewable <= 0.25:
+            self.dirty_charge_steps += 1
         self.last_power_used = power_used
         self.peak_load = max(self.peak_load, power_used)
 
-        done = self.step_count >= self.max_steps
+        self.price = self._price_at(self.step_count)
+        self.renewable = self._renewable_at(self.step_count)
+        self.done = self.step_count >= self.max_steps or self._all_work_completed()
+
+        progress = self._progress()
         info = StepInfo(
             served_on_time=served_on_time,
             missed=missed,
             power_used=power_used,
             peak_load=self.peak_load,
             active_vehicles=len(self.vehicles),
+            score=progress.score,
+            success=progress.success if self.done else False,
+            last_action_error=self.last_action_error,
             reward_breakdown=reward_breakdown,
             truncated_actions=truncated_actions,
         )
         observation = self._get_observation()
-        return observation, reward, done, info.model_dump()
+        return observation, reward, self.done, info.model_dump()
 
     def step_result(self, action: Action | Dict[str, Sequence[int]], strict: bool = False) -> StepResult:
         observation, reward, done, info = self.step(action, strict=strict)
@@ -148,7 +194,7 @@ class SmartChargeEnv:
             price=round(self.price, 4),
             renewable=round(self.renewable, 4),
             time_step=self.step_count,
-            slots_available=self.max_slots,
+            slots_available=max(0, self.max_slots),
         )
 
     def _normalize_action(self, action: Action | Dict[str, Sequence[int]], strict: bool) -> Action:
@@ -160,43 +206,20 @@ class SmartChargeEnv:
                     raise ValueError(f"Invalid assignment '{value}'. Allowed values are 0, 1, or 2.")
                 value = 0 if value < 0 else 2
             cleaned_assignments.append(value)
+        self.last_action_error = None
         return Action(assignments=cleaned_assignments)
 
-    def _spawn_arrivals(self) -> None:
-        arrivals = 0
-        roll = self.rng.random()
-        if self.config.bursty_arrivals and roll < 0.35:
-            arrivals = 2
-        elif roll < self.config.arrival_prob:
-            arrivals = 1
+    def _spawn_arrivals(self, step: int) -> None:
+        for spec in self.config.arrivals_by_step.get(step, []):
+            self.vehicles.append(self._vehicle_from_spec(spec))
 
-        for _ in range(arrivals):
-            self.vehicle_counter += 1
-            priority = "high" if self.rng.random() < 0.35 else "normal"
-            deadline_low, deadline_high = (4, 10) if self.mode == "hard" else (5, 14)
-            if self.mode == "easy":
-                deadline_low, deadline_high = (6, 16)
-            vehicle = Vehicle(
-                id=f"veh-{self.vehicle_counter}",
-                soc=round(self.rng.uniform(0.10, 0.60), 3),
-                deadline=self.rng.randint(deadline_low, deadline_high),
-                priority=priority,
-            )
-            self.vehicles.append(vehicle)
+    def _price_at(self, step: int) -> float:
+        index = min(step, len(self.config.price_profile) - 1)
+        return round(self.config.price_profile[index], 4)
 
-    def _compute_price(self, step: int) -> float:
-        cycle = math.sin((step / max(1, self.max_steps)) * math.tau)
-        noise = self.rng.uniform(-self.config.price_noise, self.config.price_noise)
-        value = self.config.price_base + self.config.price_amplitude * cycle + noise
-        if self.mode == "hard" and self.rng.random() < 0.15:
-            value += 0.12
-        return round(min(max(value, 0.10), 1.00), 4)
-
-    def _compute_renewable(self, step: int) -> float:
-        cycle = math.cos((step / max(1, self.max_steps)) * math.pi)
-        noise = self.rng.uniform(-self.config.renewable_noise, self.config.renewable_noise)
-        value = self.config.renewable_base + self.config.renewable_amplitude * cycle + noise
-        return round(min(max(value, 0.0), 1.0), 4)
+    def _renewable_at(self, step: int) -> float:
+        index = min(step, len(self.config.renewable_profile) - 1)
+        return round(self.config.renewable_profile[index], 4)
 
     def _calculate_reward(
         self,
@@ -204,23 +227,27 @@ class SmartChargeEnv:
         served_on_time: int,
         missed: int,
         charged_energy: float,
+        clean_energy: float,
+        dirty_energy: float,
         power_used: float,
         total_vehicles: int,
         current_vehicle_count: int,
         pre_step_demand: float,
         progress_delta: float,
         no_progress_streak: int,
+        price: float,
+        renewable: float,
     ) -> Dict[str, float]:
         weighted_served = float(served_on_time)
         deadline_score = min(weighted_served / total_vehicles, 1.0)
+        missed_penalty = min(missed / total_vehicles, 1.0)
 
         max_power = max(1.0, float(self.max_slots * ACTION_TO_POWER[2]))
         power_ratio = min(power_used / max_power, 1.0)
         spike_ratio = min(max(power_used - self.last_power_used, 0.0) / max_power, 1.0)
         energy_efficiency = max(0.0, 1.0 - power_ratio - 0.15 * spike_ratio)
 
-        total_possible_energy = max(charged_energy, self.max_slots * FAST_RATE)
-        renewable_usage = min(1.0, self.renewable * (charged_energy / total_possible_energy)) if charged_energy > 0 else 0.0
+        renewable_usage = min(1.0, clean_energy / max(charged_energy, 1e-6)) if charged_energy > 0 else 0.0
 
         urgent_vehicles = sum(1 for vehicle in self.vehicles if vehicle.priority == "high" or vehicle.deadline <= 2)
         used_slots = min(self.max_slots, int(round(power_used)))
@@ -247,29 +274,142 @@ class SmartChargeEnv:
         # Penalize harmful charging when conditions are clearly unfavorable.
         harmful_charge_penalty = 0.0
         if power_used > 0:
-            expensive_dirty_grid = self.price > 0.75 and self.renewable < 0.25
+            expensive_dirty_grid = price > 0.75 and renewable < 0.25
             no_urgent_demand = urgent_vehicles == 0
             if expensive_dirty_grid and no_urgent_demand:
-                harmful_charge_penalty = min(power_ratio, 1.0)
+                harmful_charge_penalty = min((power_ratio + dirty_energy) / 2.0, 1.0)
+
+        objective_progress = self._objective_progress(
+            served_increment=served_on_time,
+            missed_increment=missed,
+        )
 
         total = (
-            0.30 * deadline_score
-            + 0.25 * energy_efficiency
-            + 0.15 * renewable_usage
+            0.24 * deadline_score
+            + 0.20 * energy_efficiency
+            + 0.14 * renewable_usage
             + 0.10 * action_efficiency
-            + 0.20 * progress_score
+            + 0.16 * progress_score
+            + 0.16 * objective_progress
             - 0.10 * loop_penalty
             - 0.10 * harmful_charge_penalty
+            - 0.10 * missed_penalty
         )
         total = min(max(total, 0.0), 1.0)
 
         return {
             "deadline_score": round(deadline_score, 4),
+            "missed_penalty": round(missed_penalty, 4),
             "energy_efficiency": round(energy_efficiency, 4),
             "renewable_usage": round(renewable_usage, 4),
             "action_efficiency": round(action_efficiency, 4),
             "progress_score": round(progress_score, 4),
+            "objective_progress": round(objective_progress, 4),
             "loop_penalty": round(loop_penalty, 4),
             "harmful_charge_penalty": round(harmful_charge_penalty, 4),
             "total": round(total, 4),
         }
+
+    def _vehicle_from_spec(self, spec: VehicleSpec) -> Vehicle:
+        return Vehicle(id=spec.id, soc=spec.soc, deadline=spec.deadline, priority=spec.priority)
+
+    def _all_work_completed(self) -> bool:
+        future_arrivals_exist = any(step > self.step_count for step in self.config.arrivals_by_step)
+        return not self.vehicles and not future_arrivals_exist
+
+    def _objective_progress(self, *, served_increment: int, missed_increment: int) -> float:
+        served_progress = min(
+            (self.total_served + served_increment) / max(1, self.config.min_served),
+            1.0,
+        )
+        missed_budget = max(1, self.config.max_missed + 1)
+        missed_progress = 1.0 - min((self.total_missed + missed_increment) / missed_budget, 1.0)
+        return max(0.0, 0.7 * served_progress + 0.3 * missed_progress)
+
+    def _score(self) -> float:
+        if self.total_served == 0 and self.total_missed == 0 and self.total_energy_delivered == 0:
+            return 0.0
+        served_ratio = min(self.total_served / max(1, self.config.min_served), 1.0)
+        missed_ratio = 1.0 - min(self.total_missed / max(1, self.config.max_missed + 1), 1.0)
+        clean_ratio = self.clean_energy_delivered / max(self.total_energy_delivered, 1e-6) if self.total_energy_delivered > 0 else 0.0
+        peak_ratio = 1.0
+        if self.config.max_peak_load is not None:
+            peak_ratio = 1.0 - min(max(self.peak_load - self.config.max_peak_load, 0.0) / max(self.config.max_peak_load, 1.0), 1.0)
+        dirty_ratio = 1.0
+        if self.config.max_dirty_charge_steps is not None:
+            dirty_ratio = 1.0 - min(
+                max(self.dirty_charge_steps - self.config.max_dirty_charge_steps, 0) / max(self.config.max_dirty_charge_steps + 1, 1),
+                1.0,
+            )
+        clean_target_ratio = 1.0
+        if self.config.min_clean_energy_ratio is not None:
+            clean_target_ratio = min(clean_ratio / max(self.config.min_clean_energy_ratio, 1e-6), 1.0)
+        return round(
+            min(
+                max(
+                    0.34 * served_ratio
+                    + 0.22 * missed_ratio
+                    + 0.16 * peak_ratio
+                    + 0.14 * dirty_ratio
+                    + 0.14 * clean_target_ratio,
+                    0.0,
+                ),
+                1.0,
+            ),
+            4,
+        )
+
+    def _progress(self) -> TaskProgress:
+        clean_ratio = (
+            self.clean_energy_delivered / self.total_energy_delivered
+            if self.total_energy_delivered > 0
+            else 0.0
+        )
+        score = self._score()
+        success = self.is_success()
+        return TaskProgress(
+            served=self.total_served,
+            missed=self.total_missed,
+            cumulative_reward=round(self.cumulative_reward, 4),
+            peak_load=round(self.peak_load, 4),
+            dirty_charge_steps=self.dirty_charge_steps,
+            clean_energy_ratio=round(clean_ratio, 4),
+            score=score,
+            success=success,
+        )
+
+    def _task_spec(self) -> TaskSpec:
+        return TaskSpec(
+            id=self.config.mode,
+            title=self.config.title,
+            objective=self.config.objective,
+            min_served=self.config.min_served,
+            max_missed=self.config.max_missed,
+            max_peak_load=self.config.max_peak_load,
+            max_dirty_charge_steps=self.config.max_dirty_charge_steps,
+            min_clean_energy_ratio=self.config.min_clean_energy_ratio,
+        )
+
+    def is_success(self) -> bool:
+        clean_ratio = (
+            self.clean_energy_delivered / self.total_energy_delivered
+            if self.total_energy_delivered > 0
+            else 0.0
+        )
+        if self.total_served < self.config.min_served:
+            return False
+        if self.total_missed > self.config.max_missed:
+            return False
+        if self.config.max_peak_load is not None and self.peak_load > self.config.max_peak_load:
+            return False
+        if (
+            self.config.max_dirty_charge_steps is not None
+            and self.dirty_charge_steps > self.config.max_dirty_charge_steps
+        ):
+            return False
+        if (
+            self.config.min_clean_energy_ratio is not None
+            and clean_ratio < self.config.min_clean_energy_ratio
+        ):
+            return False
+        return True
