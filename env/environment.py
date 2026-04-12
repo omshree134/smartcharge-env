@@ -9,6 +9,8 @@ SLOW_RATE = 0.08
 FAST_RATE = 0.20
 ACTION_TO_POWER = {0: 0.0, 1: 1.0, 2: 2.0}
 ACTION_TO_CHARGE = {0: 0.0, 1: SLOW_RATE, 2: FAST_RATE}
+MIN_OPEN_SCORE = 0.0001
+MAX_OPEN_SCORE = 0.9999
 
 
 class SmartChargeEnv:
@@ -328,7 +330,7 @@ class SmartChargeEnv:
 
     def _score(self) -> float:
         if self.total_served == 0 and self.total_missed == 0 and self.total_energy_delivered == 0:
-            return 0.0
+            return MIN_OPEN_SCORE
         served_ratio = min(self.total_served / max(1, self.config.min_served), 1.0)
         missed_ratio = 1.0 - min(self.total_missed / max(1, self.config.max_missed + 1), 1.0)
         clean_ratio = self.clean_energy_delivered / max(self.total_energy_delivered, 1e-6) if self.total_energy_delivered > 0 else 0.0
@@ -344,20 +346,15 @@ class SmartChargeEnv:
         clean_target_ratio = 1.0
         if self.config.min_clean_energy_ratio is not None:
             clean_target_ratio = min(clean_ratio / max(self.config.min_clean_energy_ratio, 1e-6), 1.0)
-        return round(
-            min(
-                max(
-                    0.34 * served_ratio
-                    + 0.22 * missed_ratio
-                    + 0.16 * peak_ratio
-                    + 0.14 * dirty_ratio
-                    + 0.14 * clean_target_ratio,
-                    0.0,
-                ),
-                1.0,
-            ),
-            4,
+        raw_score = (
+            0.34 * served_ratio
+            + 0.22 * missed_ratio
+            + 0.16 * peak_ratio
+            + 0.14 * dirty_ratio
+            + 0.14 * clean_target_ratio
         )
+        clamped_open = min(max(raw_score, MIN_OPEN_SCORE), MAX_OPEN_SCORE)
+        return round(clamped_open, 4)
 
     def _progress(self) -> TaskProgress:
         clean_ratio = (

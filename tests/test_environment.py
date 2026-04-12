@@ -93,7 +93,7 @@ def test_state_exposes_task_progress():
     state = env.state()
 
     assert state.task.id == "hard"
-    assert state.progress.score == 0.0
+    assert 0.0 < state.progress.score < 1.0
     assert state.done is False
 
 
